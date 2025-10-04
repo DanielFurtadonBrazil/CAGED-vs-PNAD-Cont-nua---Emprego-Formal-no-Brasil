@@ -1,0 +1,169 @@
+---
+title: "Integração de Bases, Visualização e Publicação Web"
+subtitle: "CAGED vs PNAD Contínua - Emprego Formal no Brasil"
+author: "Daniel Furtado Nunes Rocha da Silva"
+date: "2025"
+output: html_document
+---
+
+# Metadados da Análise
+
+**Disciplina:** Introdução ao R Aplicado em Ciência de Dados  
+**Professor:** Diogo Tavares Robaina  
+**Aluno:** Daniel Furtado Nunes Rocha da Silva  
+**Ano:** 2025  
+
+**Objetivo:** Desenvolver habilidades em integração de bases de dados, visualização de dados e publicação web usando R.
+
+---
+
+# Introdução Didática
+
+Este trabalho origina-se de uma análise desenvolvida para a disciplina de Séries Temporais, agora ampliada e adaptada para integração de bases e publicação web.
+
+**Por que comparar CAGED e PNAD Contínua?**
+
+- O **CAGED** é um registro administrativo que captura todos os vínculos formais de trabalho, excelente para medir o **fluxo mensal** (admissões e demissões).  
+- A **PNAD Contínua** é uma pesquisa domiciliar amostral que estima o **estoque de ocupados**, capturando setor formal e informal.  
+
+Comparar estas bases permite:  
+1. Entender a relação entre fluxo (CAGED) e estoque (PNAD).  
+2. Validar consistência entre metodologias.  
+3. Identificar defasagens temporais.  
+4. Avaliar qualidade de registros administrativos versus pesquisas amostrais.  
+
+---
+
+# Carregamento de Pacotes
+
+```{r setup, message=FALSE, warning=FALSE}
+# Lista de pacotes necessários
+pacotes <- c("ecoseries", "sidrar", "ggplot2", "scales", "vars", "aod", 
+             "rstanarm", "brms", "MCMCpack", "forecast", "urca", "dplyr",
+             "seasonal", "gridExtra", "patchwork", "readr", "tidyr")
+
+# Verifica pacotes faltantes e instala se necessário
+pacotes_instalar <- pacotes[!pacotes %in% installed.packages()[,"Package"]]
+if(length(pacotes_instalar) > 0) {
+  install.packages(pacotes_instalar, dependencies = TRUE)
+}
+
+# Carrega bibliotecas principais
+library(ecoseries)
+library(sidrar)
+library(ggplot2)
+library(scales)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(forecast)
+
+options(scipen = 999)
+theme_set(theme_minimal())
+```
+
+## Coleta dos Dados Brutos
+
+# 1.1 CAGED
+caged_bruto <- series_ipeadata('272844966', periodicity = 'M')
+
+# 1.2 PNAD Contínua
+pnad_bruto <- get_sidra(api = '/t/6320/n1/all/v/4090/p/all/c11913/allxt')
+
+## Limpeza e Processamento dos Dados
+
+# Limpeza CAGED
+caged_limpo <- caged_bruto$serie_272844966 %>%
+  mutate(
+    caged_saldo = as.numeric(valor),
+    fonte = "CAGED/MTE"
+  ) %>%
+  select(data, caged_saldo, fonte) %>%
+  arrange(data) %>%
+  filter(!is.na(caged_saldo))
+
+# Limpeza PNAD
+pnad_limpo <- pnad_bruto %>%
+  filter(`Posição na ocupação e categoria do emprego no trabalho principal (Código)` == '31722') %>%
+  mutate(
+    data = as.Date(paste0(`Trimestre Móvel (Código)`, "01"), format = "%Y%m%d"),
+    pnad_ocupados = as.numeric(Valor),
+    fonte = "PNAD Contínua/IBGE"
+  ) %>%
+  select(data, pnad_ocupados, fonte) %>%
+  arrange(data) %>%
+  filter(!is.na(pnad_ocupados))
+
+## Integração das Bases
+
+dados_integrados <- inner_join(caged_limpo, pnad_limpo, by = "data") %>%
+  mutate(
+    fonte = "CAGED + PNAD",
+    ano = as.integer(format(data, "%Y")),
+    mes = as.integer(format(data, "%m"))
+  ) %>%
+  select(data, ano, mes, caged_saldo, pnad_ocupados, fonte) %>%
+  arrange(data)
+
+summary(dados_integrados)
+
+## Visualização dos Dados
+# Evolução Temporal
+
+p1 <- ggplot(dados_integrados, aes(x = data)) +
+  geom_line(aes(y = caged_saldo, colour = 'CAGED - Saldo Empregos Formais'), size = 1.2, alpha = 0.8) +
+  geom_line(aes(y = pnad_ocupados/100, colour = 'PNAD - Ocupados com Carteira (÷100)'), size = 1.2, alpha = 0.8) +
+  scale_colour_manual(
+    name = "Indicadores de Emprego",
+    values = c('CAGED - Saldo Empregos Formais' = '#E41A1C',
+               'PNAD - Ocupados com Carteira (÷100)' = '#377EB8')
+  ) +
+  labs(
+    title = "Evolução do Emprego Formal no Brasil",
+    subtitle = "CAGED (fluxo mensal) vs PNAD (estoque trimestral)",
+    x = "Ano", y = "Quantidade de Pessoas"
+  ) +
+  theme_minimal()
+
+p1
+
+# Dispersão e Correlação
+
+correlacao <- cor(dados_integrados$caged_saldo, dados_integrados$pnad_ocupados, use = "complete.obs")
+
+p2 <- ggplot(dados_integrados, aes(x = caged_saldo, y = pnad_ocupados)) +
+  geom_point(aes(color = ano), alpha = 0.7, size = 3) +
+  geom_smooth(method = "lm", se = TRUE, color = "#4DAF4A", size = 1.2) +
+  labs(
+    title = "Relação entre CAGED e PNAD",
+    subtitle = paste("Correlação:", round(correlacao, 4)),
+    x = "Saldo CAGED (fluxo)", y = "Ocupados PNAD (estoque)"
+  ) +
+  theme_minimal()
+
+p2
+
+## Análise Estatística
+
+estatisticas_descritivas <- dados_integrados %>%
+  summarise(
+    Observacoes = n(),
+    Media_CAGED = mean(caged_saldo, na.rm = TRUE),
+    Media_PNAD = mean(pnad_ocupados, na.rm = TRUE),
+    Correlacao = round(cor(caged_saldo, pnad_ocupados, use = "complete.obs"), 4)
+  )
+estatisticas_descritivas
+
+modelo_regressao <- lm(pnad_ocupados ~ caged_saldo, data = dados_integrados)
+summary(modelo_regressao)
+
+## Glossário de Variáveis
+
+glossario_detalhado <- data.frame(
+  Variavel = c("data","ano","mes","caged_saldo","pnad_ocupados","fonte"),
+  Descricao = c("Data de referência","Ano da observação","Mês da observação",
+                "Saldo líquido de empregos formais (CAGED)",
+                "Ocupados com carteira (PNAD)","Fonte dos dados")
+)
+glossario_detalhado
+
